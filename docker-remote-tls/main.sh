@@ -9,17 +9,24 @@ PURPLE="\033[0;35m"
 CYAN='\033[0;36m'
 PLAIN='\033[0m'
 
-# 服务器 IP, 如 192.168.0.1
-IP=$1
-# RSA 私钥密码, 如 123456
-PASSWD=$2
-# 证书保存目录, 默认 /data/base/docker
-DIR=${3:-"/data/base/docker"}
-# 证书有效期天数，默认 36500，代表 100 年
-PERIOD=${4:-36500}
+read -p "请输入服务器IP(默认自动检测): " IP
+IP=${IP:-$(curl -s https://api4.ipify.org)}
+echo -e "${BLUE}IP: ${IP}${PLAIN}"
 
-mkdir -p $DIR/temp
-cd $DIR/temp
+read -p "请输入证书私钥密码(默认随机12位密码): " PASSWD
+PASSWD=${PASSWD:-$(LC_CTYPE=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 12)}
+echo -e "${BLUE}证书私钥密码: ${PASSWD}${PLAIN}"
+
+read -p "请输入证书保存目录(默认/data/base/docker): " DIR
+DIR=${DIR:-"/data/base/docker"}
+echo -e "${BLUE}证书保存目录: ${DIR}${PLAIN}"
+
+read -p "请输入证书有效天数(默认36500): " PERIOD
+PERIOD=${PERIOD:-36500}
+echo -e "${BLUE}证书有效天数: ${PERIOD}${PLAIN}"
+
+mkdir -p ${DIR}/client
+cd ${DIR}/client
 
 # 为 CA 创建私钥
 openssl genrsa -aes256 -passout pass:"${PASSWD}" -out ca-key.pem 4096
@@ -54,21 +61,28 @@ chmod 400 ca-key.pem server-key.pem client-key.pem
 
 chmod 444 ca.pem server-cert.pem client-cert.pem
 
-mv ca.pem $DIR/ca.pem
-mv server-cert.pem $DIR/cert.pem
-mv server-key.pem $DIR/key.pem
-mv client-cert.pem $DIR/temp/cert.pem
-mv client-key.pem $DIR/temp/key.pem
+cp ca.pem ../ca.pem
+mv ca-key.pem ../ca-key.pem
+mv server-cert.pem ../cert.pem
+mv server-key.pem ../key.pem
 
+mkdir -p /etc/systemd/system/docker.service.d
 cat >/etc/systemd/system/docker.service.d/override.conf <<EOF
 [Service]
 ExecStart=
-ExecStart=/usr/bin/dockerd -H tcp://${IP}:2376 --tls --tlsverify --tlscacert=/data/base/docker/cert/ca.pem --tlscert=/data/base/docker/cert.pem --tlskey=/data/base/docker/key.pem  --containerd=/run/containerd/containerd.sock
+ExecStart=/usr/bin/dockerd -H fd:// -H tcp://${IP}:2376 --tls --tlsverify --tlscacert=${DIR}/ca.pem --tlscert=${DIR}/cert.pem --tlskey=${DIR}/key.pem --containerd=/run/containerd/containerd.sock
 EOF
 
 systemctl daemon-reload
 systemctl restart docker
 
-tar -zcvf $DIR/client.tar.gz $DIR/ca.pem $DIR/temp/cert.pem $DIR/temp/key.pem
+mv client-cert.pem cert.pem
+mv client-key.pem key.pem
+tar -zcvf ../client.tar.gz ca.pem cert.pem key.pem
+
+cd ${DIR}
+mv client client
+tar -zcvf client.tar.gz ca.pem client/cert.pem client/key.pem
 
 echo -e "${GREEN}客户端证书生成成功, 路径: ${DIR}/client.tar.gz${PLAIN}"
+echo -e "${GREEN}可使用 sz client.tar.gz 下载到本地进行 Docker 远程安全连接${PLAIN}"
